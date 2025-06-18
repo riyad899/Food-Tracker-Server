@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-
+const jwt = require('jsonwebtoken');
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -67,6 +67,20 @@ async function run() {
       await addFoodCollection.createIndex({ userId: 1 });
       console.log("✅ Created indexes for 'addfood' collection");
     }
+
+app.post('/jwt', (req, res) => {
+    const user = { email: req.body.email };
+    console.log(user);
+
+    // Generate actual JWT token
+    const token = jwt.sign(user, process.env.JWT_SECRET, { expiresIn: '7d' });
+    res.send({ token });
+});
+
+
+
+
+
 
     // ========== USER ROUTES ========== //
 
@@ -369,6 +383,20 @@ async function run() {
 
 
     app.get('/addfood', async (req, res) => {
+      const headers = req.headers?.authorization?.split(' ')[1];
+      // console.log("Headers:", headers);
+      if(headers){
+        jwt.verify(headers, process.env.JWT_SECRET, async (err, decoded) => {
+          if (err) {
+            console.error("JWT verification error:", err);
+            return res.status(401).json({ error: "Unauthorized" });
+          }
+          // console.log("Decoded JWT:", decoded);
+        });
+      }
+      if (!headers) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
   try {
     const { userId, status } = req.query;
 
