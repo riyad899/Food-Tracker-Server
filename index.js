@@ -402,14 +402,16 @@ app.post('/addfood', verifyToken, async (req, res) => {
 });
 
 // GET all food items from addfood collection (with optional filtering)
-app.get('/addfood', verifyToken, async (req, res) => {
+app.get('/addfood', async (req, res) => {
   try {
-    const { status } = req.query;
+    const { userId, status } = req.query;
 
-    // Create a query object - always filter by the authenticated user
-    const query = {
-      userId: req.user.userId
-    };
+    // Create a query object based on provided parameters
+    const query = {};
+
+    if (userId) {
+      query.userId = userId;
+    }
 
     if (status) {
       query.status = status;
