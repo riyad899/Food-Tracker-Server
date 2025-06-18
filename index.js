@@ -343,69 +343,73 @@ app.post('/jwt', (req, res) => {
     });
 
     // ========== ADD FOOD ROUTES ========== //
+// Middleware to verify JWT
+const verifyToken = (req, res, next) => {
+  const token = req.headers?.authorization?.split(' ')[1];
 
-    // POST API to add new food item to addfood collection
-    app.post('/addfood', async (req, res) => {
-      try {
-        const newFood = req.body;
+  if (!token) {
+    return res.status(401).json({ error: "Unauthorized - No token provided" });
+  }
 
-        // Basic validation
-        if (!newFood.name || !newFood.expiryDate || !newFood.userId) {
-          return res.status(400).json({
-            error: "Name, Expiry Date, and User ID are required"
-          });
-        }
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) {
+      console.error("JWT verification error:", err);
+      return res.status(401).json({ error: "Unauthorized - Invalid token" });
+    }
 
-        // Convert string date to Date object if needed
-        if (typeof newFood.expiryDate === 'string') {
-          newFood.expiryDate = new Date(newFood.expiryDate);
-        }
+    // Attach the decoded user information to the request
+    req.user = decoded;
+    next();
+  });
+};
 
-        // Add additional fields
-        const foodData = {
-          ...newFood,
-          status: 'active',
-          createdAt: new Date(),
-          updatedAt: new Date()
-        };
+// POST API to add new food item to addfood collection
+app.post('/addfood', verifyToken, async (req, res) => {
+  try {
+    const newFood = req.body;
 
-        const result = await addFoodCollection.insertOne(foodData);
-        const insertedFood = await addFoodCollection.findOne({
-          _id: result.insertedId
-        });
+    // Basic validation
+    if (!newFood.name || !newFood.expiryDate) {
+      return res.status(400).json({
+        error: "Name and Expiry Date are required"
+      });
+    }
 
-        res.status(201).json(insertedFood);
-      } catch (error) {
-        console.error("Error adding food to addfood collection:", error);
-        res.status(500).json({ error: "Internal server error" });
-      }
+    // Convert string date to Date object if needed
+    if (typeof newFood.expiryDate === 'string') {
+      newFood.expiryDate = new Date(newFood.expiryDate);
+    }
+
+    // Add additional fields with user ID from token
+    const foodData = {
+      ...newFood,
+      userId: req.user.userId, // Ensure the food is associated with the authenticated user
+      status: 'active',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await addFoodCollection.insertOne(foodData);
+    const insertedFood = await addFoodCollection.findOne({
+      _id: result.insertedId
     });
 
+    res.status(201).json(insertedFood);
+  } catch (error) {
+    console.error("Error adding food to addfood collection:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
-    app.get('/addfood', async (req, res) => {
-      const headers = req.headers?.authorization?.split(' ')[1];
-      // console.log("Headers:", headers);
-      if(headers){
-        jwt.verify(headers, process.env.JWT_SECRET, async (err, decoded) => {
-          if (err) {
-            console.error("JWT verification error:", err);
-            return res.status(401).json({ error: "Unauthorized" });
-          }
-          // console.log("Decoded JWT:", decoded);
-        });
-      }
-      if (!headers) {
-        return res.status(401).json({ error: "Unauthorized" });
-      }
+// GET all food items from addfood collection (with optional filtering)
+app.get('/addfood', verifyToken, async (req, res) => {
   try {
-    const { userId, status } = req.query;
+    const { status } = req.query;
 
-    // Create a query object based on provided parameters
-    const query = {};
-
-    if (userId) {
-      query.userId = userId;
-    }
+    // Create a query object - always filter by the authenticated user
+    const query = {
+      userId: req.user.userId
+    };
 
     if (status) {
       query.status = status;
@@ -424,29 +428,124 @@ app.post('/jwt', (req, res) => {
   }
 });
 
+// GET all food items from addfood collection for a specific user
+app.get('/addfood/:userId', verifyToken, async (req, res) => {
+  try {
+    const userId = req.params.userId;
 
+    // Validate userId matches the authenticated user
+    if (userId !== req.user.userId) {
+      return res.status(403).json({ error: "Forbidden - You can only access your own food items" });
+    }
 
+    const foods = await addFoodCollection.find({ userId }).toArray();
+    res.json(foods);
+  } catch (error) {
+    console.error("Error fetching food items from addfood collection:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
+// UPDATE food item in addfood collection
+app.put('/addfood/:id', verifyToken, async (req, res) => {
+  try {
+    const foodId = req.params.id;
+    const updates = req.body;
 
+    if (!ObjectId.isValid(foodId)) {
+      return res.status(400).json({ error: "Valid Food ID is required" });
+    }
 
-
-    // GET all food items from addfood collection for a specific user
-    app.get('/addfood/:userId', async (req, res) => {
-      try {
-        const userId = req.params.userId;
-
-        // Validate userId
-        if (!userId) {
-          return res.status(400).json({ error: "User ID is required" });
-        }
-
-        const foods = await addFoodCollection.find({ userId }).toArray();
-        res.json(foods);
-      } catch (error) {
-        console.error("Error fetching food items from addfood collection:", error);
-        res.status(500).json({ error: "Internal server error" });
-      }
+    // First find the food item to verify ownership
+    const existingFood = await addFoodCollection.findOne({
+      _id: new ObjectId(foodId)
     });
+
+    if (!existingFood) {
+      return res.status(404).json({ error: "Food item not found" });
+    }
+
+    // Check if the authenticated user owns this food item
+    if (existingFood.userId !== req.user.userId) {
+      return res.status(403).json({ error: "Forbidden - You can only update your own food items" });
+    }
+
+    const foodData = {
+      ...updates,
+      updatedAt: new Date()
+    };
+
+    const result = await addFoodCollection.updateOne(
+      { _id: new ObjectId(foodId) },
+      { $set: foodData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: "Food item not found" });
+    }
+
+    const updatedFood = await addFoodCollection.findOne({
+      _id: new ObjectId(foodId)
+    });
+
+    res.json(updatedFood);
+  } catch (error) {
+    console.error("Error updating food item:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// DELETE food item from addfood collection
+app.delete('/addfood/:id', verifyToken, async (req, res) => {
+  try {
+    const foodId = req.params.id;
+
+    if (!ObjectId.isValid(foodId)) {
+      return res.status(400).json({ error: "Valid Food ID is required" });
+    }
+
+    // First find the food item to verify ownership
+    const existingFood = await addFoodCollection.findOne({
+      _id: new ObjectId(foodId)
+    });
+
+    if (!existingFood) {
+      return res.status(404).json({ error: "Food item not found" });
+    }
+
+    // Check if the authenticated user owns this food item
+    if (existingFood.userId !== req.user.userId) {
+      return res.status(403).json({ error: "Forbidden - You can only delete your own food items" });
+    }
+
+    const result = await addFoodCollection.deleteOne({
+      _id: new ObjectId(foodId)
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: "Food item not found" });
+    }
+
+    res.json({ message: "Food item deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting food item:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
      app.post('/food/:foodId/notes', async (req, res) => {
       try {
@@ -488,67 +587,6 @@ app.post('/jwt', (req, res) => {
         res.status(500).json({ error: "Internal server error" });
       }
     });
-
-    // Add these routes to your existing backend code
-
-// UPDATE food item in addfood collection
-app.put('/addfood/:id', async (req, res) => {
-  try {
-    const foodId = req.params.id;
-    const updates = req.body;
-
-    if (!ObjectId.isValid(foodId)) {
-      return res.status(400).json({ error: "Valid Food ID is required" });
-    }
-
-    const foodData = {
-      ...updates,
-      updatedAt: new Date()
-    };
-
-    const result = await addFoodCollection.updateOne(
-      { _id: new ObjectId(foodId) },
-      { $set: foodData }
-    );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ error: "Food item not found" });
-    }
-
-    const updatedFood = await addFoodCollection.findOne({
-      _id: new ObjectId(foodId)
-    });
-
-    res.json(updatedFood);
-  } catch (error) {
-    console.error("Error updating food item:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// DELETE food item from addfood collection
-app.delete('/addfood/:id', async (req, res) => {
-  try {
-    const foodId = req.params.id;
-
-    if (!ObjectId.isValid(foodId)) {
-      return res.status(400).json({ error: "Valid Food ID is required" });
-    }
-
-    const result = await addFoodCollection.deleteOne({
-      _id: new ObjectId(foodId)
-    });
-
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ error: "Food item not found" });
-    }
-
-    res.json({ message: "Food item deleted successfully" });
-  } catch (error) {
-    console.error("Error deleting food item:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
 
     // GET all notes for a specific food item
     app.get('/food/:foodId/notes', async (req, res) => {
